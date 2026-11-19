@@ -1,0 +1,133 @@
+name: Publish to nuget.org
+
+# 说明：GitHub 只扫描 .github/workflows/*.yml，且点开头的文件名不会被识别，
+# 所以本仓库这份叫 ci-cd.yml；GitLab 侧 include 的 .ci-cd.yml 是另一个文件。
+#
+# 中转链路：
+#   私有 GitLab 把 .nupkg 推到本仓库 GitHub Packages → 调一次 workflow_dispatch，inputs.packages 传清单
+#   → 本工作流逐个取包、换 nuget.org 1 小时临时 key、推送，成功后删掉 GitHub Packages 里的副本。
+#
+# nuget.org 的 Trusted Publishing 策略绑定的是 "ci-cd.yml" 这个文件名，改名要先改策略。
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: '清单，JSON 数组：[{"id":"Kayisoft.Core","version":"1.2.3"}]'
+        required: true
+
+permissions:
+  contents: read
+  id-token: write # 换 nuget.org 临时 key 必须
+
+concurrency:
+  group: nuget-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      REPO: ${{ github.repository }}
+      FEED_OWNER: CHANGE_ME
+      GH_TOKEN: ${{ secrets.GH_PAT }}
+      NUGET_PACKAGES: ${{ runner.temp }}/packages
+      MANIFEST: ${{ inputs.packages }}
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Validate manifest
+        run: |
+          jq -e 'type == "array" and length > 0 and length <= 500' <<<"$MANIFEST" > /dev/null \
+            || { echo "清单必须是 1~500 条的 JSON 数组"; exit 1; }
+          jq -e 'all(.[]; (.id | type) == "string" and (.version | type) == "string"
+                  and (.id | test("^[A-Za-z][A-Za-z0-9._-]{0,99}$"))
+                  and (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$")))' \
+            <<<"$MANIFEST" > /dev/null \
+            || { echo "清单里有非法包 ID 或版本"; exit 1; }
+
+      # 拉 GitHub Packages 的 .nupkg 没有 flat container 可用，只能借 restore 落地到全局包目录。
+      - name: Prepare feed config + pruning helpers
+        run: |
+          cat > "$RUNNER_TEMP/nuget.config" <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="gh" value="https://nuget.pkg.github.com/${FEED_OWNER}/index.json" />
+              <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+            </packageSources>
+            <packageSourceCredentials>
+              <gh>
+                <add key="Username" value="${FEED_OWNER}" />
+                <add key="ClearTextPassword" value="${GH_TOKEN}" />
+              </gh>
+            </packageSourceCredentials>
+          </configuration>
+          EOF
+          cat > "$RUNNER_TEMP/helpers.sh" <<'EOF'
+          # 删掉 GitHub Packages 里的副本；删不掉只告警，不影响发布结果
+          delete_feed_copy() {
+            local id=$1 ver=$2 raw vid
+            raw=$(gh api --paginate "/repos/${REPO}/packages/nuget/${id}/versions" 2>/dev/null || true)
+            [ -n "$raw" ] || { echo "warn: 读不到 ${id} 的 GitHub Packages 版本列表，跳过删除"; return 0; }
+            vid=$(printf '%s' "$raw" | jq -r --arg v "$ver" \
+              '[.[] | select((.name | ascii_downcase) == ($v | ascii_downcase))][0].id // empty')
+            [ -n "$vid" ] || { echo "warn: GitHub Packages 里没有 ${id} ${ver}，跳过删除"; return 0; }
+            gh api -X DELETE "/repos/${REPO}/packages/nuget/${id}/versions/${vid}" > /dev/null \
+              && echo "deleted ${id} ${ver} from GitHub Packages"
+          }
+          EOF
+
+      # 已经发过的直接跳过并清理本地副本：重跑、重复触发都不会误报失败
+      - name: Drop already-published versions
+        id: filter
+        run: |
+          source "$RUNNER_TEMP/helpers.sh"
+          : > "$RUNNER_TEMP/pending.json"
+          while IFS= read -r item; do
+            id=$(jq -r .id <<<"$item"); ver=$(jq -r .version <<<"$item")
+            if curl -fs -o /dev/null "https://api.nuget.org/v3-flatcontainer/${id,,}/${ver,,}/${id,,}.${ver,,}.nupkg"; then
+              echo "already on nuget.org: ${id} ${ver}"
+              delete_feed_copy "$id" "$ver" || true
+            else
+              echo "$item" >> "$RUNNER_TEMP/pending.json"
+            fi
+          done < <(jq -c '.[]' <<<"$MANIFEST")
+          count=$(wc -l < "$RUNNER_TEMP/pending.json")
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+          echo "pending: ${count}"
+
+      - name: NuGet login (OIDC -> 1h API key)
+        if: steps.filter.outputs.count != '0'
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Push batch
+        if: steps.filter.outputs.count != '0'
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: |
+          source "$RUNNER_TEMP/helpers.sh"
+          cd "$RUNNER_TEMP"
+          while IFS= read -r item; do
+            id=$(jq -r .id <<<"$item"); ver=$(jq -r .version <<<"$item")
+            cat > relay.csproj <<EOF
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup><TargetFramework>netstandard2.0</TargetFramework></PropertyGroup>
+            <ItemGroup><PackageReference Include="${id}" Version="${ver}" /></ItemGroup>
+          </Project>
+          EOF
+            dotnet restore relay.csproj --configfile nuget.config
+            nupkg=$(ls "$NUGET_PACKAGES/${id,,}/${ver,,}"/*.nupkg)
+            dotnet nuget push "$nupkg" \
+              --api-key "$NUGET_API_KEY" \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate
+            delete_feed_copy "$id" "$ver" || true
+          done < pending.json
