@@ -36,8 +36,8 @@ GitHub 只扫描 `.github/workflows/` 下的 `*.yml`，点开头的文件名不�
 2. 本仓库 Settings → Secrets
    - `NUGET_USER`：nuget.org 用户名（不是邮箱）
    - `GH_PAT`：GitLab 推包 + 工作流取包 + 删副本都用它，见下
-3. 把 `ci-cd.yml` 里的 `FEED_OWNER: CHANGE_ME` 改成 GitHub 组织名
-4. 默认分支是 `main`，不是的话改 `refs/heads/main` 和 dispatch 里的 `ref`
+3. `FEED_OWNER` 取 `${{ github.repository_owner }}`，不用改
+4. 本仓库默认分支是 `master`，工作流已对齐；GitLab 侧 dispatch 的 `ref` 也要传 `master`
 
 ## 二、包名到底受什么限制
 
@@ -98,7 +98,7 @@ publish_nuget:
         -H "Authorization: Bearer $GH_PAT" \
         -H "Accept: application/vnd.github+json" \
         "https://api.github.com/repos/$RELAY_REPO/actions/workflows/ci-cd.yml/dispatches" \
-        -d "$(jq -n --slurpfile m manifest.json '{ref:"main",inputs:{packages:($m[0]|tojson)}}')"
+        -d "$(jq -n --slurpfile m manifest.json '{ref:"master",inputs:{packages:($m[0]|tojson)}}')"
 ```
 
 ## 四、批量怎么跑

@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       REPO: ${{ github.repository }}
-      FEED_OWNER: CHANGE_ME
+      FEED_OWNER: ${{ github.repository_owner }}
       GH_TOKEN: ${{ secrets.GH_PAT }}
       MANIFEST: ${{ inputs.packages }}
     steps:
