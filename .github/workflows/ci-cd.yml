@@ -68,16 +68,16 @@ jobs:
           EOF
           cat > "$RUNNER_TEMP/helpers.sh" <<'EOF'
           # 删掉 GitHub Packages 里的副本；删不掉只告警，不影响发布结果。
-          # NuGet 包属于账号级 feed（granular permissions），必须用 /users/{owner}，
-          # 仓库级 /repos/{repo}/packages 对 NuGet 返回 Not Found。
+          # NuGet 包属于 granular permissions（账号/组织级 feed），不是仓库级：
+          # /repos/{repo}/packages 对 NuGet 返回 Not Found，必须走 /orgs/{owner}。
           delete_feed_copy() {
             local id=$1 ver=$2 raw vid
-            raw=$(gh api --paginate "/users/${FEED_OWNER}/packages/nuget/${id}/versions" 2>/dev/null || true)
+            raw=$(gh api --paginate "/orgs/${FEED_OWNER}/packages/nuget/${id}/versions" 2>/dev/null || true)
             [ -n "$raw" ] || { echo "warn: 读不到 ${id} 的 GitHub Packages 版本列表，跳过删除"; return 0; }
             vid=$(printf '%s' "$raw" | jq -r --arg v "$ver" \
               '[.. | objects | select((((.name // "") | ascii_downcase) == ($v | ascii_downcase)))][0].id // empty')
             [ -n "$vid" ] || { echo "warn: GitHub Packages 里没有 ${id} ${ver}，跳过删除"; return 0; }
-            gh api -X DELETE "/users/${FEED_OWNER}/packages/nuget/${id}/versions/${vid}" > /dev/null \
+            gh api -X DELETE "/orgs/${FEED_OWNER}/packages/nuget/${id}/versions/${vid}" > /dev/null \
               && echo "deleted ${id} ${ver} from GitHub Packages"
           }
           EOF
