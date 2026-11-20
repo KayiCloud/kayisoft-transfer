@@ -139,7 +139,18 @@ jobs:
               --skip-duplicate; then
               echo "FAILED push: ${id} ${ver}"; failed=$((failed + 1)); continue
             fi
-            delete_feed_copy "$id" "$ver" || true
+          done < pending.json
+          # 包之间互相依赖（ProjectReference 打包成 package 依赖），所以副本必须等整批推完再删：
+          # 删早了，后面包的 restore 只能去 nuget.org 找刚推上去、还没索引的版本，会 NU1102。
+          # 再叠加一层条件：nuget.org 能取到该版本才删，否则留副本给后续批次 restore 用。
+          while IFS= read -r item; do
+            id=$(jq -r .id <<<"$item"); ver=$(jq -r .version <<<"$item")
+            if curl -fs -o /dev/null \
+              "https://api.nuget.org/v3-flatcontainer/${id,,}/${ver,,}/${id,,}.${ver,,}.nupkg"; then
+              delete_feed_copy "$id" "$ver" || true
+            else
+              echo "keep feed copy (nuget.org not serving it yet): ${id} ${ver}"
+            fi
           done < pending.json
           if [ "$failed" -ne 0 ]; then
             echo "failed packages: ${failed} (rerun the same manifest to retry them)"

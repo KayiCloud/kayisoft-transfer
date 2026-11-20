@@ -21,7 +21,7 @@ GitHub Actions，由它换 key 并推 nuget.org。
                             ├─ 跳过 nuget.org 已存在的版本，删掉 GitHub Packages 副本
                             ├─ 逐个 restore 取包 + NuGet/login@v1 换 1 小时 key
                             ├─ 逐个 dotnet nuget push --skip-duplicate
-                            └─ 推成功后删 GitHub Packages 副本
+                            └─ 整批推完、nuget.org 可服务后再删 GitHub Packages 副本
 ```
 
 包属于**组织级 feed**（granular permissions），不是仓库级：REST 上要用
@@ -135,7 +135,9 @@ dispatch-relay:
   都安全；全部已发布时连 key 都不会换。
 - 某个包取不到或推送失败只记账、跳过，整批跑完后 job 失败；补跑同一份清单即可
   （已成功的会被跳过）。一个坏包不会拖累同批其余 99 个。
-- 推成功后自动删 GitHub Packages 副本，Packages 里不会越堆越多。
+- 推成功后删 GitHub Packages 副本，但**要等整批推完**：包之间互相依赖，删早了后面包的
+  restore 只能去 nuget.org 找还没索引的新版本（NU1102）。只有 nuget.org 已能取到该版本时才删，
+  取不到就留着副本给后续批次用。
 - 各批 dispatch 并行跑：GitLab 每批 100 条，批次间的包互不重叠，各自换自己的 1 小时 key，
   不会互相踩；重复版本靠 `--skip-duplicate` 兜底。
 - 不要在工作流上加 `concurrency`：同一组 GitHub 只保留 1 running + 1 pending，第 3 批起
