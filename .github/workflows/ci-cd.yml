@@ -20,9 +20,8 @@ permissions:
   contents: read
   id-token: write # 换 nuget.org 临时 key 必须
 
-concurrency:
-  group: nuget-publish
-  cancel-in-progress: false
+# 不设 concurrency：GitLab 按批 dispatch，同一组里 GitHub 只保留 1 running + 1 pending，
+# 第 3 批起会把前面的 pending 静默取消。各批的包互不重叠，并行跑即可。
 
 jobs:
   publish:
@@ -36,7 +35,7 @@ jobs:
     steps:
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 9.0.x
 
       - name: Validate manifest
         run: |
@@ -120,7 +119,7 @@ jobs:
             id=$(jq -r .id <<<"$item"); ver=$(jq -r .version <<<"$item")
             cat > relay.csproj <<EOF
           <Project Sdk="Microsoft.NET.Sdk">
-            <PropertyGroup><TargetFramework>netstandard2.0</TargetFramework></PropertyGroup>
+            <PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup>
             <ItemGroup><PackageReference Include="${id}" Version="${ver}" /></ItemGroup>
           </Project>
           EOF

@@ -141,7 +141,10 @@ publish_nuget:
   都安全；全部已发布时连 key 都不会换。
 - 某个包取不到或推送失败会中断该批，剩下的包补跑同一份清单即可（已成功的会被跳过）。
 - 推成功后自动删 GitHub Packages 副本，Packages 里不会越堆越多。
-- 并发由 `concurrency: nuget-publish` 串行化，不会互相踩。
+- 各批 dispatch 并行跑：GitLab 每批 100 条，批次间的包互不重叠，各自换自己的 1 小时 key，
+  不会互相踩；重复版本靠 `--skip-duplicate` 兜底。
+- 不要在工作流上加 `concurrency`：同一组 GitHub 只保留 1 running + 1 pending，第 3 批起
+  前面的 pending 会被静默取消。
 - 单个 job 超过 6 小时会被 GitHub 杀掉；真要超，GitLab 侧拆成几批 dispatch。
 
 ## 验证
